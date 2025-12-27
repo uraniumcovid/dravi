@@ -1,7 +1,11 @@
 [package]
-name = "dravi_tui"
+name = "dravi"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+
+[[bin]]
+name = "dravi"
+path = "src/main.rs"
 
 [dependencies]
 crossterm = "0.27"

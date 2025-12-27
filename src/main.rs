@@ -22,7 +22,7 @@ use std::{
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum AppMode {
     Drawing,
     Selection,
@@ -75,6 +75,7 @@ struct App {
     origin_y: f64,
     grid_snap: bool,
     text_buffer: String,
+    typst_content: Vec<String>,
 }
 
 impl App {
@@ -122,6 +123,7 @@ impl App {
             origin_y: 20.0,
             grid_snap: false,
             text_buffer: String::new(),
+            typst_content: Vec::new(),
         }
     }
 
@@ -291,29 +293,38 @@ impl App {
                 self.text_buffer.clear();
             }
             KeyCode::Enter => {
-                // Place the text buffer on canvas and move to next line
-                for (i, ch) in self.text_buffer.chars().enumerate() {
-                    let x = (self.cursor_x as usize + i).min(self.canvas_width - 1);
-                    let y = self.cursor_y as usize;
-                    if x < self.canvas_width && y < self.virtual_height {
-                        self.canvas[y][x] = Some(DrawChar::Text(ch));
+                // Place the text on canvas AND save to typst content
+                if !self.text_buffer.is_empty() {
+                    // Place text on canvas at current cursor position
+                    for (i, ch) in self.text_buffer.chars().enumerate() {
+                        let x = (self.cursor_x as usize + i).min(self.canvas_width - 1);
+                        let y = self.cursor_y as usize;
+                        if x < self.canvas_width && y < self.virtual_height {
+                            self.canvas[y][x] = Some(DrawChar::Text(ch));
+                        }
                     }
+                    
+                    // Also save to typst content for export
+                    self.typst_content.push(self.text_buffer.clone());
+                    self.text_buffer.clear();
+                    
+                    // Move cursor to next line
+                    self.cursor_y += 1.0;
+                    self.cursor_x = self.origin_x; // Reset to left margin
                 }
-                self.move_cursor(0.0, 1.0); // New line
-                self.cursor_x = self.origin_x; // Reset to left margin
-                self.text_buffer.clear();
                 self.mode = AppMode::Drawing; // Return to drawing mode
             }
             KeyCode::Backspace => {
                 if !self.text_buffer.is_empty() {
                     self.text_buffer.pop();
-                } else {
-                    // Move cursor back and delete character
-                    self.move_cursor(-1.0, 0.0);
-                    let x = self.cursor_x as usize;
-                    let y = self.cursor_y as usize;
-                    if x < self.canvas_width && y < self.virtual_height {
-                        self.canvas[y][x] = None;
+                } else if !self.typst_content.is_empty() {
+                    // Edit the last typst line
+                    if let Some(last_line) = self.typst_content.last_mut() {
+                        if last_line.is_empty() {
+                            self.typst_content.pop();
+                        } else {
+                            last_line.pop();
+                        }
                     }
                 }
             }
@@ -359,12 +370,16 @@ impl App {
     
     fn open_pdf(&self) {
         use std::process::Command;
+        use std::env;
+        
+        let current_dir = env::current_dir().unwrap();
+        let pdf_file = format!("{}/drawing.pdf", current_dir.display());
         
         // Open PDF with tdf in a new terminal
-        let terminals = [("alacritty", vec!["-e", "tdf", "drawing.pdf"]),
-                        ("gnome-terminal", vec!["--", "tdf", "drawing.pdf"]),
-                        ("xterm", vec!["-e", "tdf", "drawing.pdf"]),
-                        ("konsole", vec!["-e", "tdf", "drawing.pdf"])];
+        let terminals = [("alacritty", vec!["-e", "tdf", &pdf_file]),
+                        ("gnome-terminal", vec!["--", "tdf", &pdf_file]),
+                        ("xterm", vec!["-e", "tdf", &pdf_file]),
+                        ("konsole", vec!["-e", "tdf", &pdf_file])];
         
         for (terminal, args) in &terminals {
             if let Ok(_) = Command::new(terminal)
@@ -494,7 +509,9 @@ impl App {
 
 
     fn save_typst(&self) {
-        if let Ok(mut file) = File::create("drawing.typ") {
+        use std::env;
+        let filename = format!("{}/drawing.typ", env::current_dir().unwrap().display());
+        if let Ok(mut file) = File::create(&filename) {
             let _ = writeln!(file, "#set page(margin: 0.5in, fill: black)");
             let _ = writeln!(file, "#set text(size: 12pt, fill: rgb(\"#ff69b4\"))");
             let _ = writeln!(file, "#set par(leading: 0.6em)");
@@ -502,83 +519,28 @@ impl App {
             let _ = writeln!(file, "= Mathematical Calculations");
             let _ = writeln!(file, "");
             
-            // Check if we have text content
-            let has_text = self.canvas.iter().any(|row| {
-                row.iter().any(|cell| matches!(cell, Some(DrawChar::Text(_))))
+            // Output natural Typst content
+            if !self.typst_content.is_empty() {
+                for line in &self.typst_content {
+                    if line.contains('$') {
+                        let _ = writeln!(file, "{}", line);
+                    } else if line.matches('=').count() == 1 && 
+                              (line.contains('+') || line.contains('-') || 
+                               line.contains('*') || line.contains('/')) {
+                        let _ = writeln!(file, "${}", line);
+                    } else {
+                        let _ = writeln!(file, "{}", line);
+                    }
+                }
+                let _ = writeln!(file, "");
+            }
+            
+            // Add ASCII art drawing if present
+            let has_drawing = self.canvas.iter().any(|row| {
+                row.iter().any(|cell| matches!(cell, Some(DrawChar::Point | DrawChar::Horizontal | DrawChar::Vertical | DrawChar::Cross | DrawChar::DiagRight | DrawChar::DiagLeft)))
             });
             
-            if has_text {
-                // Collect text content and render as normal Typst paragraphs
-                let mut text_lines = Vec::new();
-                
-                for row in &self.canvas {
-                    let mut has_text_content = false;
-                    let mut text_content = String::new();
-                    
-                    for cell in row {
-                        match cell {
-                            Some(DrawChar::Text(ch)) => {
-                                text_content.push(*ch);
-                                has_text_content = true;
-                            },
-                            Some(DrawChar::Point) => text_content.push('•'),
-                            Some(DrawChar::Horizontal) => text_content.push('-'),
-                            Some(DrawChar::Vertical) => text_content.push('|'),
-                            Some(DrawChar::Cross) => text_content.push('+'),
-                            Some(DrawChar::DiagRight) => text_content.push('/'),
-                            Some(DrawChar::DiagLeft) => text_content.push('\\'),
-                            None => {
-                                if has_text_content {
-                                    text_content.push(' ');
-                                }
-                            },
-                        }
-                    }
-                    
-                    if has_text_content {
-                        text_lines.push(text_content.trim_end().to_string());
-                    }
-                }
-                
-                // Join lines into natural paragraphs
-                let mut paragraph = String::new();
-                for line in text_lines {
-                    if line.trim().is_empty() {
-                        if !paragraph.is_empty() {
-                            // Output current paragraph
-                            if paragraph.contains('$') {
-                                let _ = writeln!(file, "{}", paragraph.trim());
-                            } else if paragraph.matches('=').count() == 1 && 
-                                      (paragraph.contains('+') || paragraph.contains('-') || 
-                                       paragraph.contains('*') || paragraph.contains('/')) {
-                                let _ = writeln!(file, "${}", paragraph.trim());
-                            } else {
-                                let _ = writeln!(file, "{}", paragraph.trim());
-                            }
-                            let _ = writeln!(file, "");
-                            paragraph.clear();
-                        }
-                    } else {
-                        if !paragraph.is_empty() {
-                            paragraph.push(' ');
-                        }
-                        paragraph.push_str(&line);
-                    }
-                }
-                
-                // Output final paragraph
-                if !paragraph.is_empty() {
-                    if paragraph.contains('$') {
-                        let _ = writeln!(file, "{}", paragraph.trim());
-                    } else if paragraph.matches('=').count() == 1 && 
-                              (paragraph.contains('+') || paragraph.contains('-') || 
-                               paragraph.contains('*') || paragraph.contains('/')) {
-                        let _ = writeln!(file, "${}", paragraph.trim());
-                    } else {
-                        let _ = writeln!(file, "{}", paragraph.trim());
-                    }
-                }
-            } else {
+            if has_drawing {
                 // Pure ASCII art drawing
                 let _ = writeln!(file, "```");
                 for row in &self.canvas {
@@ -607,10 +569,14 @@ impl App {
     
     fn compile_to_pdf(&self) {
         use std::process::Command;
+        use std::env;
+        
+        let current_dir = env::current_dir().unwrap();
+        let typ_file = format!("{}/drawing.typ", current_dir.display());
         
         // Try to compile with typst
         match Command::new("typst")
-            .args(["compile", "drawing.typ"])
+            .args(["compile", &typ_file])
             .output() {
             Ok(output) => {
                 if output.status.success() {
@@ -631,6 +597,8 @@ impl App {
                 *pixel = None;
             }
         }
+        // Also clear typst content
+        self.typst_content.clear();
     }
 }
 
@@ -722,6 +690,7 @@ fn ui(f: &mut Frame, app: &App) {
                     }
                 }
             }
+
 
             // Only draw cursor if it's visible
             if app.cursor_y >= app.scroll_y as f64 && app.cursor_y < (app.scroll_y + app.canvas_height) as f64 {
