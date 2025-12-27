@@ -29,6 +29,7 @@ enum AppMode {
     ColorSelection,
     CoordinateInput,
     TypstInput,
+    TitleInput,
     Settings,
     PdfRender,
 }
@@ -75,6 +76,7 @@ struct App {
     origin_y: f64,
     grid_snap: bool,
     text_buffer: String,
+    title_buffer: String,
     typst_content: Vec<String>,
 }
 
@@ -111,18 +113,19 @@ impl App {
             should_quit: false,
             keyboard_grid,
             current_char: DrawChar::Point,
-            current_color: Color::Rgb(255, 105, 180), // Hot pink
+            current_color: Color::Rgb(255, 107, 138), // #ff6b8a
             color_input: String::new(),
             continuous_draw: false,
             last_cursor_x: 40.0,
             last_cursor_y: 20.0,
             coordinate_system: CoordinateSystem::Cartesian,
-            show_axes: true,
+            show_axes: false,
             coordinate_input: String::new(),
             origin_x: 40.0,
             origin_y: 20.0,
             grid_snap: false,
             text_buffer: String::new(),
+            title_buffer: String::new(),
             typst_content: Vec::new(),
         }
     }
@@ -134,6 +137,7 @@ impl App {
             AppMode::ColorSelection => self.handle_color_selection_keys(key),
             AppMode::CoordinateInput => self.handle_coordinate_input_keys(key),
             AppMode::TypstInput => self.handle_typst_input_keys(key),
+            AppMode::TitleInput => self.handle_title_input_keys(key),
             AppMode::Settings => self.handle_settings_keys(key),
             AppMode::PdfRender => self.handle_pdf_render_keys(key),
         }
@@ -150,7 +154,7 @@ impl App {
             KeyCode::Char(' ') => self.draw_char(),
             KeyCode::Char('?') => self.mode = AppMode::Settings,
             KeyCode::Char('c') => self.clear_canvas(),
-            KeyCode::Char('s') => self.save_typst(),
+            KeyCode::Char('s') => self.mode = AppMode::TitleInput,
             KeyCode::Char('x') => self.mode = AppMode::ColorSelection,
             KeyCode::Char('d') => self.continuous_draw = !self.continuous_draw,
             KeyCode::Char('a') => self.show_axes = !self.show_axes,
@@ -367,13 +371,40 @@ impl App {
             _ => {}
         }
     }
+
+    fn handle_title_input_keys(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = AppMode::Drawing;
+                self.title_buffer.clear();
+            }
+            KeyCode::Enter => {
+                if self.title_buffer.is_empty() {
+                    self.title_buffer = "untitled".to_string();
+                }
+                self.save_typst();
+                self.mode = AppMode::Drawing;
+                self.title_buffer.clear();
+            }
+            KeyCode::Backspace => {
+                self.title_buffer.pop();
+            }
+            KeyCode::Char(ch) => {
+                if !ch.is_control() && self.title_buffer.len() < 50 {
+                    self.title_buffer.push(ch);
+                }
+            }
+            _ => {}
+        }
+    }
     
     fn open_pdf(&self) {
         use std::process::Command;
         use std::env;
         
+        let title = if self.title_buffer.is_empty() { "untitled" } else { &self.title_buffer };
         let current_dir = env::current_dir().unwrap();
-        let pdf_file = format!("{}/drawing.pdf", current_dir.display());
+        let pdf_file = format!("{}/{}.pdf", current_dir.display(), title);
         
         // Open PDF with tdf in a new terminal
         let terminals = [("alacritty", vec!["-e", "tdf", &pdf_file]),
@@ -510,13 +541,14 @@ impl App {
 
     fn save_typst(&self) {
         use std::env;
-        let filename = format!("{}/drawing.typ", env::current_dir().unwrap().display());
+        let title = if self.title_buffer.is_empty() { "untitled" } else { &self.title_buffer };
+        let filename = format!("{}/{}.typ", env::current_dir().unwrap().display(), title);
         if let Ok(mut file) = File::create(&filename) {
             let _ = writeln!(file, "#set page(margin: 0.5in, fill: black)");
-            let _ = writeln!(file, "#set text(size: 12pt, fill: rgb(\"#ff69b4\"))");
+            let _ = writeln!(file, "#set text(size: 12pt, fill: rgb(\"#ff6b8a\"))");
             let _ = writeln!(file, "#set par(leading: 0.6em)");
             let _ = writeln!(file, "");
-            let _ = writeln!(file, "= Mathematical Calculations");
+            let _ = writeln!(file, "= {}", title);
             let _ = writeln!(file, "");
             
             // Output natural Typst content
@@ -571,8 +603,9 @@ impl App {
         use std::process::Command;
         use std::env;
         
+        let title = if self.title_buffer.is_empty() { "untitled" } else { &self.title_buffer };
         let current_dir = env::current_dir().unwrap();
-        let typ_file = format!("{}/drawing.typ", current_dir.display());
+        let typ_file = format!("{}/{}.typ", current_dir.display(), title);
         
         // Try to compile with typst
         match Command::new("typst")
@@ -625,7 +658,7 @@ fn ui(f: &mut Frame, app: &App) {
         .block(Block::default()
             .title("DraVi - Mathematical Drawing Tool")
             .borders(Borders::ALL)
-            .style(Style::default().fg(Color::Rgb(100, 149, 237)).bg(Color::Black)))
+            .style(Style::default().fg(Color::White).bg(Color::Black)))
         .x_bounds([0.0, app.canvas_width as f64])
         .y_bounds([0.0, app.canvas_height as f64])
         .background_color(Color::Black)
@@ -697,10 +730,11 @@ fn ui(f: &mut Frame, app: &App) {
                 ctx.draw(&Points {
                     coords: &[(app.cursor_x, (app.canvas_height as f64 - 1.0 - (app.cursor_y - app.scroll_y as f64)))],
                     color: match app.mode {
-                        AppMode::Drawing => Color::Rgb(255, 105, 180), // Hot pink
+                        AppMode::Drawing => Color::Rgb(255, 107, 138), // #ff6b8a
                         AppMode::Selection => Color::Yellow,
                         AppMode::ColorSelection => Color::Cyan,
                         AppMode::TypstInput => Color::Green,
+                        AppMode::TitleInput => Color::Rgb(255, 165, 0), // Orange
                         AppMode::CoordinateInput => Color::Magenta,
                         AppMode::Settings => Color::Blue,
                         AppMode::PdfRender => Color::White,
@@ -740,7 +774,7 @@ fn ui(f: &mut Frame, app: &App) {
             .block(Block::default()
                 .title("Settings")
                 .borders(Borders::ALL)
-                .style(Style::default().fg(Color::Rgb(100, 149, 237)).bg(Color::Black)))
+                .style(Style::default().fg(Color::White).bg(Color::Black)))
             .style(Style::default().bg(Color::Black).fg(Color::White));
         f.render_widget(settings_widget, chunks[1]);
     }
@@ -761,6 +795,7 @@ fn ui(f: &mut Frame, app: &App) {
         AppMode::Selection => "Selection mode - press any key to jump to that position, Esc to cancel".to_string(),
         AppMode::ColorSelection => format!("Color (hex): {} | Enter to apply, Esc to cancel", app.color_input),
         AppMode::TypstInput => format!("Typst mode: {} | Enter to place, use $ for math, Backspace to edit, Esc to exit", app.text_buffer),
+        AppMode::TitleInput => format!("Enter title: {} | Enter to save, Esc to cancel", app.title_buffer),
         AppMode::Settings => "Settings mode - use keys shown in popup to toggle options, ? or Esc to close".to_string(),
         AppMode::PdfRender => "PDF Render mode - viewing compiled PDF. Press r or Esc to return to drawing".to_string(),
         AppMode::CoordinateInput => {
@@ -776,7 +811,7 @@ fn ui(f: &mut Frame, app: &App) {
     let status = Paragraph::new(status_text)
         .block(Block::default()
             .borders(Borders::ALL)
-            .style(Style::default().fg(Color::Rgb(100, 149, 237)).bg(Color::Black)))
+            .style(Style::default().fg(Color::White).bg(Color::Black)))
         .style(Style::default().bg(Color::Black).fg(Color::White));
     f.render_widget(status, main_chunks[1]);
 }
